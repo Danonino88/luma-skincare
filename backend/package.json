@@ -1,0 +1,19 @@
+{
+  "name": "luma-skincare-backend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "server": "node server/index.js",
+    "dev": "node server/index.js",
+    "db:schema": "node server/print-schema.js",
+    "admin:create": "node server/create-admin.js"
+  },
+  "dependencies": {
+    "express": "latest",
+    "cors": "latest",
+    "pg": "latest",
+    "dotenv": "latest"
+  },
+  "devDependencies": {}
+}

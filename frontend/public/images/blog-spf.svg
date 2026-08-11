@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" role="img" aria-label="Protección solar SPF">
+  <rect width="720" height="420" fill="#f4f7fb"/>
+  <circle cx="360" cy="200" r="104" fill="#f1cf61"/>
+  <g stroke="#d8ad2f" stroke-width="16" stroke-linecap="round">
+    <line x1="360" y1="42" x2="360" y2="88"/><line x1="360" y1="312" x2="360" y2="358"/><line x1="202" y1="200" x2="248" y2="200"/><line x1="472" y1="200" x2="518" y2="200"/>
+    <line x1="248" y1="88" x2="280" y2="120"/><line x1="472" y1="312" x2="440" y2="280"/><line x1="248" y1="312" x2="280" y2="280"/><line x1="472" y1="88" x2="440" y2="120"/>
+  </g>
+  <text x="360" y="215" text-anchor="middle" font-family="Arial" font-size="54" font-weight="900" fill="#1a1a1a">SPF</text>
+  <text x="360" y="370" text-anchor="middle" font-family="Arial" font-size="20" font-weight="900" letter-spacing="5" fill="#1a1a1a">PROTECCIÓN DIARIA</text>
+</svg>

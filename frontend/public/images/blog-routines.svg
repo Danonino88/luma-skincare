@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" role="img" aria-label="Rutina skincare">
+  <rect width="720" height="420" fill="#fff8ec"/>
+  <rect x="145" y="95" width="430" height="55" rx="28" fill="#1a1a1a"/>
+  <rect x="145" y="182" width="350" height="55" rx="28" fill="#d8ad2f"/>
+  <rect x="145" y="269" width="470" height="55" rx="28" fill="#eadbc6"/>
+  <text x="360" y="370" text-anchor="middle" font-family="Arial" font-size="20" font-weight="900" letter-spacing="5" fill="#1a1a1a">RUTINAS</text>
+</svg>

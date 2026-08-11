@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" role="img" aria-label="Ingredientes de skincare">
+  <rect width="720" height="420" fill="#f7f1e8"/>
+  <circle cx="205" cy="215" r="90" fill="#d8ad2f" opacity=".82"/>
+  <circle cx="360" cy="215" r="90" fill="#fff" opacity=".78"/>
+  <circle cx="515" cy="215" r="90" fill="#4a3325" opacity=".82"/>
+  <text x="360" y="365" text-anchor="middle" font-family="Arial" font-size="20" font-weight="900" letter-spacing="5" fill="#1a1a1a">INGREDIENTES</text>
+</svg>

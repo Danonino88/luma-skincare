@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 620" role="img" aria-label="Antes de rutina skincare">
+  <defs><linearGradient id="a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#eadbc6"/><stop offset="1" stop-color="#c9b399"/></linearGradient></defs>
+  <rect width="720" height="620" fill="url(#a)"/>
+  <circle cx="190" cy="160" r="28" fill="#b98b76" opacity=".45"/>
+  <circle cx="420" cy="280" r="20" fill="#b98b76" opacity=".38"/>
+  <circle cx="500" cy="190" r="16" fill="#b98b76" opacity=".42"/>
+  <circle cx="310" cy="390" r="23" fill="#b98b76" opacity=".35"/>
+  <rect y="500" width="720" height="120" fill="#1a1a1a" opacity=".28"/>
+  <text x="42" y="565" font-family="Arial" font-size="26" font-weight="800" letter-spacing="3" fill="#fff">ANTES — SEMANA 0</text>
+</svg>

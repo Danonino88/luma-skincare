@@ -1,0 +1,22 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Modelo ER Auth Luma">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="Modelo Entidad-Relación — Autenticación Luma" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=22;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="280" y="30" width="640" height="40" as="geometry" /></mxCell>
+        <mxCell id="usuarios" value="usuarios&#xa;id PK&#xa;nombre&#xa;email UNIQUE&#xa;password_hash&#xa;activo&#xa;creado_en" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;align=left;spacingLeft=14;" vertex="1" parent="1"><mxGeometry x="90" y="150" width="220" height="150" as="geometry" /></mxCell>
+        <mxCell id="roles" value="roles&#xa;id PK&#xa;nombre UNIQUE&#xa;descripcion&#xa;creado_en" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;align=left;spacingLeft=14;" vertex="1" parent="1"><mxGeometry x="480" y="150" width="220" height="130" as="geometry" /></mxCell>
+        <mxCell id="permisos" value="permisos&#xa;id PK&#xa;codigo UNIQUE&#xa;descripcion&#xa;creado_en" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;align=left;spacingLeft=14;" vertex="1" parent="1"><mxGeometry x="870" y="150" width="220" height="130" as="geometry" /></mxCell>
+        <mxCell id="usuario_rol" value="usuario_rol&#xa;usuario_id FK&#xa;rol_id FK&#xa;PRIMARY KEY(usuario_id, rol_id)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;align=left;spacingLeft=14;" vertex="1" parent="1"><mxGeometry x="290" y="420" width="240" height="115" as="geometry" /></mxCell>
+        <mxCell id="rol_permiso" value="rol_permiso&#xa;rol_id FK&#xa;permiso_id FK&#xa;PRIMARY KEY(rol_id, permiso_id)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;align=left;spacingLeft=14;" vertex="1" parent="1"><mxGeometry x="675" y="420" width="250" height="115" as="geometry" /></mxCell>
+        <mxCell id="sesiones" value="sesiones&#xa;id PK&#xa;usuario_id FK&#xa;token_hash UNIQUE&#xa;expira_en&#xa;revocada&#xa;creado_en" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;align=left;spacingLeft=14;" vertex="1" parent="1"><mxGeometry x="90" y="450" width="220" height="155" as="geometry" /></mxCell>
+        <mxCell id="e1" edge="1" parent="1" source="usuarios" target="usuario_rol" value="1 a N" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" edge="1" parent="1" source="roles" target="usuario_rol" value="1 a N" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" edge="1" parent="1" source="roles" target="rol_permiso" value="1 a N" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" edge="1" parent="1" source="permisos" target="rol_permiso" value="1 a N" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" edge="1" parent="1" source="usuarios" target="sesiones" value="1 a N" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
