@@ -29,7 +29,7 @@ function Contact({ showNotice }) {
     setStatus('loading')
 
     try {
-      await fetch('http://localhost:4000/api/contact', {
+      await fetch(`${import.meta.env.VITE_API_BASE || "http://localhost:4000"}/api/contact`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
