@@ -7,7 +7,11 @@
     "server": "node server/index.js",
     "dev": "node server/index.js",
     "db:schema": "node server/print-schema.js",
-    "admin:create": "node server/create-admin.js"
+    "admin:create": "node server/create-admin.js",
+    "test": "node --test --test-concurrency=1 tests/unit/auth-utils.test.js tests/integration/auth.integration.test.js tests/e2e/auth.e2e.test.js",
+    "test:unit": "node --test tests/unit/auth-utils.test.js",
+    "test:integration": "node --test --test-concurrency=1 tests/integration/auth.integration.test.js",
+    "test:e2e": "node --test --test-concurrency=1 tests/e2e/auth.e2e.test.js"
   },
   "dependencies": {
     "express": "latest",
@@ -15,5 +19,8 @@
     "pg": "latest",
     "dotenv": "latest"
   },
-  "devDependencies": {}
+  "devDependencies": {},
+  "engines": {
+    "node": ">=20"
+  }
 }

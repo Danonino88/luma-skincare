@@ -4,15 +4,19 @@ import cors from 'cors'
 import crypto from 'node:crypto'
 import pg from 'pg'
 import { products, categories, ingredients, posts } from '../data/siteData.js'
+import { hasValidEmail, hasStrongPassword, normalizeEmail } from './auth-utils.js'
+import { ensureLumaSchema, registerLumaRoutes } from './luma-routes.js'
 
 const { Pool } = pg
 const app = express()
 const port = process.env.PORT || 4000
 const frontendOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173'
 const sessionDays = Number(process.env.SESSION_DAYS || 7)
-const pool = process.env.DATABASE_URL
-  ? new Pool({ connectionString: process.env.DATABASE_URL })
-  : null
+const pool = process.env.NODE_ENV === 'test'
+  ? null
+  : process.env.DATABASE_URL
+    ? new Pool({ connectionString: process.env.DATABASE_URL })
+    : null
 
 const memory = {
   newsletter: [],
@@ -47,9 +51,6 @@ const rolePermissions = {
 app.use(cors({ origin: [frontendOrigin, 'http://127.0.0.1:5173'], credentials: true }))
 app.use(express.json({ limit: '1mb' }))
 
-const hasValidEmail = (email = '') => /\S+@\S+\.\S+/.test(email)
-const hasStrongPassword = (password = '') => password.length >= 8 && /[A-ZÁÉÍÓÚÑ]/.test(password) && /[a-záéíóúñ]/.test(password) && /\d/.test(password)
-const normalizeEmail = (email = '') => email.trim().toLowerCase()
 const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('hex')
 const createToken = () => crypto.randomBytes(32).toString('hex')
 const expiresAt = () => new Date(Date.now() + sessionDays * 24 * 60 * 60 * 1000)
@@ -945,12 +946,15 @@ app.get('/api/admin/overview', authRequired, requirePermission('dashboard:view')
   }
 })
 
+registerLumaRoutes({ app, pool, authRequired })
+
 async function start() {
   if (pool) {
     try {
       await ensureAuthCatalog()
       await ensureDefaultContent()
-      console.log('Auth catalog verified')
+      await ensureLumaSchema(pool)
+      console.log('Auth catalog and Luma Wear/Mobile schema verified')
     } catch (error) {
       console.log('Auth catalog pending. Run database/schema.sql first.', error.message)
     }
@@ -963,4 +967,16 @@ async function start() {
   })
 }
 
-start()
+function resetMemory() {
+  memory.newsletter.length = 0
+  memory.contacts.length = 0
+  memory.users.length = 0
+  memory.sessions.length = 0
+  memory.nextUserId = 1
+}
+
+export { app, start, resetMemory }
+
+if (process.env.NODE_ENV !== 'test') {
+  start()
+}
