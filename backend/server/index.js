@@ -5,6 +5,7 @@ import crypto from 'node:crypto'
 import pg from 'pg'
 import { products, categories, ingredients, posts } from '../data/siteData.js'
 import { hasValidEmail, hasStrongPassword, normalizeEmail } from './auth-utils.js'
+import { cleanText, internalError, isPlainObject, logServerError } from './security-utils.js'
 import { ensureLumaSchema, registerLumaRoutes } from './luma-routes.js'
 
 const { Pool } = pg
@@ -49,7 +50,16 @@ const rolePermissions = {
 }
 
 app.use(cors({ origin: [frontendOrigin, 'http://127.0.0.1:5173'], credentials: true }))
-app.use(express.json({ limit: '1mb' }))
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  if (req.path.startsWith('/api/auth/') || req.path.startsWith('/api/luma/') || req.path.startsWith('/api/admin/')) {
+    res.setHeader('Cache-Control', 'no-store')
+  }
+  next()
+})
+app.use(express.json({ limit: '64kb', strict: true }))
 
 const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('hex')
 const createToken = () => crypto.randomBytes(32).toString('hex')
@@ -286,7 +296,7 @@ async function authRequired(req, res, next) {
     req.auth = { user, ...access, tokenHash: hash }
     return next()
   } catch (error) {
-    return res.status(500).json({ ok: false, message: 'No se pudo validar la sesión.', detail: error.message })
+    return internalError(res, 'No se pudo validar la sesión.', error)
   }
 }
 
@@ -334,15 +344,17 @@ app.get('/api/content', async (req, res) => {
       posts: dbPosts.length ? dbPosts : posts,
     })
   } catch (error) {
-    res.json({ ok: true, source: 'local_static_data_fallback', products, categories, ingredients, posts, warning: error.message })
+    logServerError('content-fallback', error)
+    res.json({ ok: true, source: 'local_static_data_fallback', products, categories, ingredients, posts, warning: 'Contenido servido temporalmente desde respaldo local.' })
   }
 })
 
 app.post('/api/newsletter', async (req, res) => {
-  const { email } = req.body
+  if (!isPlainObject(req.body)) return res.status(400).json({ ok: false, message: 'Solicitud inválida.' })
+  const email = normalizeEmail(req.body.email)
 
   if (!hasValidEmail(email)) {
-    return res.status(400).json({ ok: false, message: 'Correo inválido' })
+    return res.status(400).json({ ok: false, message: 'Correo inválido.' })
   }
 
   if (!pool) {
@@ -357,15 +369,21 @@ app.post('/api/newsletter', async (req, res) => {
     )
     res.json({ ok: true, message: 'Suscripción registrada en PostgreSQL' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo guardar la suscripción', detail: error.message })
+    internalError(res, 'No se pudo guardar la suscripción', error)
   }
 })
 
 app.post('/api/contact', async (req, res) => {
-  const { name, email, phone, skinType, topic, message } = req.body
+  if (!isPlainObject(req.body)) return res.status(400).json({ ok: false, message: 'Solicitud inválida.' })
+  const name = cleanText(req.body.name, 120)
+  const email = normalizeEmail(req.body.email)
+  const phone = cleanText(req.body.phone, 40)
+  const skinType = cleanText(req.body.skinType, 80)
+  const topic = cleanText(req.body.topic, 120)
+  const message = cleanText(req.body.message, 2000)
 
-  if (!name?.trim() || !hasValidEmail(email) || !message?.trim()) {
-    return res.status(400).json({ ok: false, message: 'Datos incompletos' })
+  if (!name || !hasValidEmail(email) || !message) {
+    return res.status(400).json({ ok: false, message: 'Datos incompletos o inválidos.' })
   }
 
   if (!pool) {
@@ -381,15 +399,16 @@ app.post('/api/contact', async (req, res) => {
     )
     res.json({ ok: true, message: 'Mensaje recibido en PostgreSQL' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo guardar el mensaje', detail: error.message })
+    internalError(res, 'No se pudo guardar el mensaje', error)
   }
 })
 
 app.post('/api/auth/register', async (req, res) => {
-  const firstName = String(req.body.firstName || '').trim()
-  const lastName = String(req.body.lastName || '').trim()
-  const phone = String(req.body.phone || '').trim()
-  const name = String(req.body.name || `${firstName} ${lastName}`).trim()
+  if (!isPlainObject(req.body)) return res.status(400).json({ ok: false, message: 'Solicitud inválida.' })
+  const firstName = cleanText(req.body.firstName, 80)
+  const lastName = cleanText(req.body.lastName, 120)
+  const phone = cleanText(req.body.phone, 40)
+  const name = cleanText(req.body.name || `${firstName} ${lastName}`, 120)
   const email = normalizeEmail(req.body.email)
   const password = String(req.body.password || '')
 
@@ -446,15 +465,16 @@ app.post('/api/auth/register', async (req, res) => {
     res.status(201).json({ ok: true, message: 'Usuario registrado.', token, user: publicUser(user, access.roles, access.permissions) })
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ ok: false, message: 'El correo ya está registrado.' })
-    res.status(500).json({ ok: false, message: 'No se pudo registrar el usuario.', detail: error.message })
+    internalError(res, 'No se pudo registrar el usuario.', error)
   }
 })
 
 app.post('/api/auth/login', async (req, res) => {
+  if (!isPlainObject(req.body)) return res.status(400).json({ ok: false, message: 'Solicitud inválida.' })
   const email = normalizeEmail(req.body.email)
   const password = String(req.body.password || '')
 
-  if (!hasValidEmail(email) || !password) {
+  if (!hasValidEmail(email) || !password || password.length > 128) {
     return res.status(400).json({ ok: false, message: 'Correo o contraseña inválidos.' })
   }
 
@@ -488,7 +508,7 @@ app.post('/api/auth/login', async (req, res) => {
     const access = await loadDbUserAccess(user.id)
     res.json({ ok: true, message: 'Inicio de sesión correcto.', token, user: publicUser(user, access.roles, access.permissions) })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo iniciar sesión.', detail: error.message })
+    internalError(res, 'No se pudo iniciar sesión.', error)
   }
 })
 
@@ -497,10 +517,11 @@ app.get('/api/auth/me', authRequired, (req, res) => {
 })
 
 app.patch('/api/auth/profile', authRequired, async (req, res) => {
-  const firstName = String(req.body.firstName || '').trim()
-  const lastName = String(req.body.lastName || '').trim()
-  const phone = String(req.body.phone || '').trim()
-  const name = String(req.body.name || `${firstName} ${lastName}` || req.auth.user.nombre || req.auth.user.name || '').trim()
+  if (!isPlainObject(req.body)) return res.status(400).json({ ok: false, message: 'Solicitud inválida.' })
+  const firstName = cleanText(req.body.firstName, 80)
+  const lastName = cleanText(req.body.lastName, 120)
+  const phone = cleanText(req.body.phone, 40)
+  const name = cleanText(req.body.name || `${firstName} ${lastName}` || req.auth.user.nombre || req.auth.user.name || '', 120)
 
   if (!name) {
     return res.status(400).json({ ok: false, message: 'El nombre no puede quedar vacío.' })
@@ -528,7 +549,7 @@ app.patch('/api/auth/profile', authRequired, async (req, res) => {
     const access = await loadDbUserAccess(req.auth.user.id)
     res.json({ ok: true, message: 'Perfil actualizado correctamente.', user: publicUser(updated.rows[0], access.roles, access.permissions) })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo actualizar el perfil.', detail: error.message })
+    internalError(res, 'No se pudo actualizar el perfil.', error)
   }
 })
 
@@ -543,7 +564,7 @@ app.post('/api/auth/logout', authRequired, async (req, res) => {
     await pool.query('UPDATE sesiones SET revocada = true WHERE token_hash = $1', [req.auth.tokenHash])
     res.json({ ok: true, message: 'Sesión cerrada.' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo cerrar sesión.', detail: error.message })
+    internalError(res, 'No se pudo cerrar sesión.', error)
   }
 })
 
@@ -579,15 +600,16 @@ app.get('/api/admin/users', authRequired, requirePermission('users:read'), async
     )
     res.json({ ok: true, source: 'postgresql', users })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudieron consultar los usuarios.', detail: error.message })
+    internalError(res, 'No se pudieron consultar los usuarios.', error)
   }
 })
 
 app.post('/api/admin/users', authRequired, requirePermission('users:manage'), async (req, res) => {
-  const firstName = String(req.body.firstName || '').trim()
-  const lastName = String(req.body.lastName || '').trim()
-  const phone = String(req.body.phone || '').trim()
-  const name = String(req.body.name || `${firstName} ${lastName}`).trim()
+  if (!isPlainObject(req.body)) return res.status(400).json({ ok: false, message: 'Solicitud inválida.' })
+  const firstName = cleanText(req.body.firstName, 80)
+  const lastName = cleanText(req.body.lastName, 120)
+  const phone = cleanText(req.body.phone, 40)
+  const name = cleanText(req.body.name || `${firstName} ${lastName}`, 120)
   const email = normalizeEmail(req.body.email)
   const password = String(req.body.password || '')
   const roleName = normalizeRole(req.body.role)
@@ -627,7 +649,7 @@ app.post('/api/admin/users', authRequired, requirePermission('users:manage'), as
     res.status(201).json({ ok: true, message: `Usuario ${name} creado con rol ${roleName}.`, user: inserted.rows[0] })
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ ok: false, message: 'El correo ya está registrado.' })
-    res.status(500).json({ ok: false, message: 'No se pudo crear el usuario.', detail: error.message })
+    internalError(res, 'No se pudo crear el usuario.', error)
   }
 })
 
@@ -670,14 +692,14 @@ app.post('/api/admin/users/practice-seed', authRequired, requirePermission('user
     }
     res.json({ ok: true, message: 'Usuarios de práctica creados/actualizados. Contraseña común: Alumno1234' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudieron crear los usuarios de práctica.', detail: error.message })
+    internalError(res, 'No se pudieron crear los usuarios de práctica.', error)
   }
 })
 
 app.patch('/api/admin/users/:id/status', authRequired, requirePermission('users:manage'), async (req, res) => {
   const userId = Number(req.params.id)
-  const active = Boolean(req.body.active)
-  if (!Number.isInteger(userId)) return res.status(400).json({ ok: false, message: 'Usuario inválido.' })
+  if (!Number.isInteger(userId) || typeof req.body?.active !== 'boolean') return res.status(400).json({ ok: false, message: 'Solicitud de estado inválida.' })
+  const active = req.body.active
   if (req.auth.user.id === userId && !active) return res.status(400).json({ ok: false, message: 'No puedes deshabilitar tu propia cuenta activa.' })
 
   if (!pool) {
@@ -695,14 +717,14 @@ app.patch('/api/admin/users/:id/status', authRequired, requirePermission('users:
     await pool.query('UPDATE sesiones SET revocada = true WHERE usuario_id = $1 AND $2 = false', [userId, active])
     res.json({ ok: true, message: active ? 'Usuario habilitado.' : 'Usuario deshabilitado. Sus sesiones activas fueron revocadas.' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo cambiar el estado del usuario.', detail: error.message })
+    internalError(res, 'No se pudo cambiar el estado del usuario.', error)
   }
 })
 
 app.patch('/api/admin/users/:id/password-change', authRequired, requirePermission('users:manage'), async (req, res) => {
   const userId = Number(req.params.id)
-  const requiresPasswordChange = Boolean(req.body.requiresPasswordChange)
-  if (!Number.isInteger(userId)) return res.status(400).json({ ok: false, message: 'Usuario inválido.' })
+  if (!Number.isInteger(userId) || typeof req.body?.requiresPasswordChange !== 'boolean') return res.status(400).json({ ok: false, message: 'Solicitud inválida.' })
+  const requiresPasswordChange = req.body.requiresPasswordChange
 
   if (!pool) {
     const user = memory.users.find((item) => item.id === userId)
@@ -715,7 +737,7 @@ app.patch('/api/admin/users/:id/password-change', authRequired, requirePermissio
     await pool.query('UPDATE usuarios SET requiere_cambio_password = $1 WHERE id = $2', [requiresPasswordChange, userId])
     res.json({ ok: true, message: requiresPasswordChange ? 'Se solicitó cambio de contraseña.' : 'Se quitó la solicitud de cambio de contraseña.' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo actualizar la propiedad de contraseña.', detail: error.message })
+    internalError(res, 'No se pudo actualizar la propiedad de contraseña.', error)
   }
 })
 
@@ -740,7 +762,7 @@ app.delete('/api/admin/users/:id', authRequired, requirePermission('users:manage
     await pool.query('DELETE FROM usuarios WHERE id = $1', [userId])
     res.json({ ok: true, message: 'Usuario eliminado. En un caso real se recomienda deshabilitar para conservar auditoría.' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo eliminar el usuario.', detail: error.message })
+    internalError(res, 'No se pudo eliminar el usuario.', error)
   }
 })
 
@@ -754,7 +776,7 @@ app.get('/api/admin/messages', authRequired, requirePermission('messages:read'),
     const rows = await getRows('SELECT * FROM contacts ORDER BY created_at DESC LIMIT 50')
     res.json({ ok: true, source: 'postgresql', contacts: rows })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudieron consultar los mensajes', detail: error.message })
+    internalError(res, 'No se pudieron consultar los mensajes', error)
   }
 })
 
@@ -777,7 +799,7 @@ app.get('/api/admin/content', authRequired, requirePermission('content:read'), a
     const content = await readAdminContent()
     res.json({ ok: true, ...content, categories, ingredients })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo consultar el contenido.', detail: error.message })
+    internalError(res, 'No se pudo consultar el contenido.', error)
   }
 })
 
@@ -813,7 +835,7 @@ app.post('/api/admin/content/items', authRequired, requirePermission('content:ma
     )
     res.status(201).json({ ok: true, message: 'Producto agregado correctamente.', id: inserted.rows[0].id })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo guardar el contenido.', detail: error.message })
+    internalError(res, 'No se pudo guardar el contenido.', error)
   }
 })
 
@@ -838,7 +860,7 @@ app.patch('/api/admin/content/items/:type/:id', authRequired, requirePermission(
     )
     res.json({ ok: true, message: 'Producto actualizado correctamente.' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo actualizar el contenido.', detail: error.message })
+    internalError(res, 'No se pudo actualizar el contenido.', error)
   }
 })
 
@@ -853,7 +875,7 @@ app.patch('/api/admin/content/items/:type/:id/visibility', authRequired, require
     await pool.query(`UPDATE ${type === 'post' ? 'blog_posts' : 'products'} SET is_active = $1 WHERE id = $2`, [active, id])
     res.json({ ok: true, message: active ? 'Contenido visible en el sitio.' : 'Contenido oculto del sitio.' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo cambiar la visibilidad.', detail: error.message })
+    internalError(res, 'No se pudo cambiar la visibilidad.', error)
   }
 })
 
@@ -867,7 +889,7 @@ app.delete('/api/admin/content/items/:type/:id', authRequired, requirePermission
     await pool.query(`DELETE FROM ${type === 'post' ? 'blog_posts' : 'products'} WHERE id = $1`, [id])
     res.json({ ok: true, message: 'Contenido eliminado correctamente.' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo eliminar el contenido.', detail: error.message })
+    internalError(res, 'No se pudo eliminar el contenido.', error)
   }
 })
 
@@ -884,7 +906,7 @@ app.post('/api/admin/content/demo-post', authRequired, requirePermission('conten
     )
     res.json({ ok: true, message: 'Contenido creado desde módulo protegido.' })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo crear el contenido.', detail: error.message })
+    internalError(res, 'No se pudo crear el contenido.', error)
   }
 })
 
@@ -942,11 +964,23 @@ app.get('/api/admin/overview', authRequired, requirePermission('dashboard:view')
       })),
     })
   } catch (error) {
-    res.status(500).json({ ok: false, message: 'No se pudo cargar el resumen del panel.', detail: error.message })
+    internalError(res, 'No se pudo cargar el resumen del panel.', error)
   }
 })
 
 registerLumaRoutes({ app, pool, authRequired })
+
+app.use('/api', (_req, res) => {
+  res.status(404).json({ ok: false, message: 'Recurso no encontrado.' })
+})
+
+// Respuestas de error controladas: nunca devolvemos stack traces ni mensajes de PostgreSQL al cliente.
+app.use((error, _req, res, _next) => {
+  if (error instanceof SyntaxError && Object.prototype.hasOwnProperty.call(error, 'body')) {
+    return res.status(400).json({ ok: false, message: 'JSON inválido.' })
+  }
+  return internalError(res, 'Ocurrió un error interno.', error, 'unhandled-request')
+})
 
 async function start() {
   if (pool) {

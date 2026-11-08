@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { cleanText, internalError, isFiniteInRange, isIsoDate, isSafeDeviceId, isUuid, logServerError } from './security-utils.js'
 
 const DEFAULT_STEPS = [
   'morning_cleanse',
@@ -245,7 +246,7 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
     }
     return res.json({
       ok: true,
-      service: 'Luma Wear/Mobile API V6',
+      service: 'Luma Wear/Mobile API V6.3 Security',
       database,
       googleWeatherConfigured: Boolean(String(process.env.GOOGLE_WEATHER_API_KEY || '').trim()),
       weatherFallback: 'open_meteo',
@@ -253,7 +254,7 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
     })
   })
 
-  app.get('/api/luma/weather', async (req, res) => {
+  app.get('/api/luma/weather', authRequired, async (req, res) => {
     const lat = Number(req.query.lat)
     const lng = Number(req.query.lng)
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
@@ -266,61 +267,81 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
         return res.json(data)
       } catch (googleError) {
         const fallback = await fetchOpenMeteo(lat, lng)
-        return res.json({ ...fallback, providerWarning: googleError.message })
+        logServerError('google-weather-fallback', googleError)
+        return res.json({ ...fallback, providerFallback: true })
       }
     } catch (error) {
-      return res.status(502).json({ ok: false, message: 'No fue posible consultar el clima.', detail: error.message })
+      logServerError('weather-upstream', error)
+      return res.status(502).json({ ok: false, message: 'No fue posible consultar el clima.' })
     }
   })
 
   app.post('/api/luma/devices/ping', authRequired, async (req, res) => {
     if (!pool) return res.status(503).json({ ok: false, message: 'Base de datos no configurada.' })
+    const deviceId = cleanText(req.body?.deviceId, 120)
+    const platform = cleanText(req.body?.platform, 20).toUpperCase()
+    const deviceName = cleanText(req.body?.deviceName, 160)
+    if (!isSafeDeviceId(deviceId) || !['WEAR', 'MOBILE'].includes(platform)) {
+      return res.status(400).json({ ok: false, message: 'Datos de dispositivo inválidos.' })
+    }
     try {
       const device = await upsertDevice(
         pool,
         req.auth.user.id,
-        req.body.deviceId,
-        req.body.platform,
-        req.body.deviceName,
+        deviceId,
+        platform,
+        deviceName,
       )
-      if (!device) return res.status(400).json({ ok: false, message: 'deviceId requerido.' })
       return res.json({ ok: true, device })
     } catch (error) {
-      return res.status(500).json({ ok: false, message: 'No se pudo registrar el dispositivo.', detail: error.message })
+      return internalError(res, 'No se pudo registrar el dispositivo.', error)
     }
   })
 
   app.post('/api/luma/routine-events', authRequired, async (req, res) => {
     if (!pool) return res.status(503).json({ ok: false, message: 'Base de datos no configurada.' })
-    const eventId = String(req.body.eventId || crypto.randomUUID())
-    const stepId = String(req.body.stepId || '').trim()
-    const period = String(req.body.period || '').trim().toUpperCase()
-    if (!stepId || !period) return res.status(400).json({ ok: false, message: 'stepId y period son requeridos.' })
+    const eventId = cleanText(req.body?.eventId || crypto.randomUUID(), 64)
+    const stepId = cleanText(req.body?.stepId, 80)
+    const period = cleanText(req.body?.period, 20).toUpperCase()
+    const deviceId = cleanText(req.body?.deviceId, 120)
+    const platform = cleanText(req.body?.platform || 'MOBILE', 20).toUpperCase()
+    const allowedSteps = new Set([...DEFAULT_STEPS, 'afternoon_hydrate'])
+    const allowedPeriods = new Set(['MAÑANA', 'TARDE', 'NOCHE'])
+    const occurredAtMillis = Number(req.body?.occurredAt)
+    const requestedRoutineDate = cleanText(req.body?.routineDate, 10)
+    if (
+      !isUuid(eventId) || !allowedSteps.has(stepId) || !allowedPeriods.has(period) ||
+      !isSafeDeviceId(deviceId) || !['WEAR', 'MOBILE'].includes(platform) ||
+      typeof req.body?.completed !== 'boolean' || !Number.isFinite(occurredAtMillis) || occurredAtMillis <= 0 ||
+      (requestedRoutineDate && !isIsoDate(requestedRoutineDate))
+    ) {
+      return res.status(400).json({ ok: false, message: 'Evento de rutina inválido.' })
+    }
 
     try {
-      const device = await upsertDevice(pool, req.auth.user.id, req.body.deviceId, req.body.platform || 'MOBILE', req.body.deviceName)
-      const occurredAt = toIsoFromMillis(req.body.occurredAt)
-      const routineDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.routineDate || ''))
-        ? String(req.body.routineDate)
-        : new Date(occurredAt).toISOString().slice(0, 10)
+      const device = await upsertDevice(pool, req.auth.user.id, deviceId, platform, cleanText(req.body?.deviceName, 160))
+      const occurredAt = toIsoFromMillis(occurredAtMillis)
+      const routineDate = requestedRoutineDate || new Date(occurredAt).toISOString().slice(0, 10)
       await pool.query(
         `INSERT INTO luma_routine_events
           (event_uuid, usuario_id, device_id, routine_date, step_code, routine_period, completed, occurred_at)
          VALUES ($1::uuid, $2, $3, $4::date, $5, $6, $7, $8::timestamptz)
          ON CONFLICT (event_uuid) DO NOTHING`,
-        [eventId, req.auth.user.id, device?.id || null, routineDate, stepId, period, Boolean(req.body.completed), occurredAt],
+        [eventId, req.auth.user.id, device?.id || null, routineDate, stepId, period, req.body.completed, occurredAt],
       )
       return res.json({ ok: true, eventId })
     } catch (error) {
-      return res.status(500).json({ ok: false, message: 'No se pudo guardar la rutina.', detail: error.message })
+      return internalError(res, 'No se pudo guardar la rutina.', error)
     }
   })
 
   app.get('/api/luma/routine-state', authRequired, async (req, res) => {
     if (!pool) return res.status(503).json({ ok: false, message: 'Base de datos no configurada.' })
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || ''))
-      ? String(req.query.date)
-      : new Date().toISOString().slice(0, 10)
+    const requestedDate = cleanText(req.query.date, 10)
+    if (requestedDate && !isIsoDate(requestedDate)) {
+      return res.status(400).json({ ok: false, message: 'Fecha inválida.' })
+    }
+    const date = requestedDate || new Date().toISOString().slice(0, 10)
     try {
       const rows = await pool.query(
         `SELECT DISTINCT ON (step_code)
@@ -333,12 +354,15 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
       const routine = Object.fromEntries(rows.rows.map((row) => [row.step_code, Boolean(row.completed)]))
       return res.json({ ok: true, date, routine, events: rows.rows })
     } catch (error) {
-      return res.status(500).json({ ok: false, message: 'No se pudo obtener la rutina.', detail: error.message })
+      return internalError(res, 'No se pudo obtener la rutina.', error)
     }
   })
 
   app.get('/api/luma/adherence', authRequired, async (req, res) => {
     if (!pool) return res.status(503).json({ ok: false, message: 'Base de datos no configurada.' })
+    if (req.query.days != null && (!/^\d+$/.test(String(req.query.days)) || Number(req.query.days) < 1 || Number(req.query.days) > 31)) {
+      return res.status(400).json({ ok: false, message: 'Rango de días inválido.' })
+    }
     const days = normalizeDays(req.query.days)
     try {
       const result = await pool.query(
@@ -376,14 +400,24 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
       })
       return res.json({ ok: true, days: list })
     } catch (error) {
-      return res.status(500).json({ ok: false, message: 'No se pudo calcular la constancia.', detail: error.message })
+      return internalError(res, 'No se pudo calcular la constancia.', error)
     }
   })
 
   app.post('/api/luma/weather-snapshots', authRequired, async (req, res) => {
     if (!pool) return res.status(503).json({ ok: false, message: 'Base de datos no configurada.' })
+    const deviceId = cleanText(req.body?.deviceId, 120)
+    const platform = cleanText(req.body?.platform || 'WEAR', 20).toUpperCase()
+    if (!isSafeDeviceId(deviceId) || !['WEAR', 'MOBILE'].includes(platform)) {
+      return res.status(400).json({ ok: false, message: 'Datos de dispositivo inválidos.' })
+    }
+    if (req.body?.latitude != null && !isFiniteInRange(req.body.latitude, -90, 90)) return res.status(400).json({ ok: false, message: 'Latitud inválida.' })
+    if (req.body?.longitude != null && !isFiniteInRange(req.body.longitude, -180, 180)) return res.status(400).json({ ok: false, message: 'Longitud inválida.' })
+    if (req.body?.humidityPercent != null && !isFiniteInRange(req.body.humidityPercent, 0, 100)) return res.status(400).json({ ok: false, message: 'Humedad inválida.' })
+    if (req.body?.uvIndex != null && !isFiniteInRange(req.body.uvIndex, 0, 30)) return res.status(400).json({ ok: false, message: 'UV inválido.' })
+    if (req.body?.temperatureC != null && !isFiniteInRange(req.body.temperatureC, -100, 100)) return res.status(400).json({ ok: false, message: 'Temperatura inválida.' })
     try {
-      const device = await upsertDevice(pool, req.auth.user.id, req.body.deviceId, req.body.platform || 'WEAR', req.body.deviceName)
+      const device = await upsertDevice(pool, req.auth.user.id, deviceId, platform, cleanText(req.body?.deviceName, 160))
       await pool.query(
         `INSERT INTO luma_weather_snapshots
           (usuario_id, device_id, latitude, longitude, temperature_c, humidity_percent, uv_index, provider, observed_at)
@@ -402,22 +436,29 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
       )
       return res.json({ ok: true })
     } catch (error) {
-      return res.status(500).json({ ok: false, message: 'No se pudo guardar el clima.', detail: error.message })
+      return internalError(res, 'No se pudo guardar el clima.', error)
     }
   })
 
   app.post('/api/luma/reminders', authRequired, async (req, res) => {
     if (!pool) return res.status(503).json({ ok: false, message: 'Base de datos no configurada.' })
+    const deviceId = cleanText(req.body?.deviceId, 120)
+    const platform = cleanText(req.body?.platform || 'WEAR', 20).toUpperCase()
+    const type = cleanText(req.body?.type || 'Cuidado de piel', 80)
+    const dueAt = Number(req.body?.dueAt)
+    if (!isSafeDeviceId(deviceId) || !['WEAR', 'MOBILE'].includes(platform) || !type || !Number.isFinite(dueAt) || dueAt <= 0) {
+      return res.status(400).json({ ok: false, message: 'Recordatorio inválido.' })
+    }
     try {
-      const device = await upsertDevice(pool, req.auth.user.id, req.body.deviceId, req.body.platform || 'WEAR', req.body.deviceName)
+      const device = await upsertDevice(pool, req.auth.user.id, deviceId, platform, cleanText(req.body?.deviceName, 160))
       await pool.query(
         `INSERT INTO luma_reminders (usuario_id, device_id, reminder_type, scheduled_at, status)
          VALUES ($1,$2,$3,$4::timestamptz,'SCHEDULED')`,
-        [req.auth.user.id, device?.id || null, String(req.body.type || 'Cuidado de piel').slice(0, 80), toIsoFromMillis(req.body.dueAt)],
+        [req.auth.user.id, device?.id || null, type, toIsoFromMillis(dueAt)],
       )
       return res.json({ ok: true })
     } catch (error) {
-      return res.status(500).json({ ok: false, message: 'No se pudo guardar el recordatorio.', detail: error.message })
+      return internalError(res, 'No se pudo guardar el recordatorio.', error)
     }
   })
 
@@ -432,12 +473,22 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
       const result = await pool.query('SELECT * FROM luma_care_preferences WHERE usuario_id = $1', [req.auth.user.id])
       return res.json({ ok: true, preferences: result.rows[0] })
     } catch (error) {
-      return res.status(500).json({ ok: false, message: 'No se pudieron obtener las preferencias.', detail: error.message })
+      return internalError(res, 'No se pudieron obtener las preferencias.', error)
     }
   })
 
   app.patch('/api/luma/preferences', authRequired, async (req, res) => {
     if (!pool) return res.status(503).json({ ok: false, message: 'Base de datos no configurada.' })
+    const numericFields = [
+      ['morningStart', 0, 23], ['afternoonStart', 0, 23], ['nightStart', 0, 23],
+      ['sunscreenTempMin', -50, 60], ['sunscreenUvMin', 0, 30], ['hydrationTempMax', -50, 60],
+      ['hydrationHumidityMax', 0, 100], ['reminderMinutes', 1, 1440],
+    ]
+    for (const [field, min, max] of numericFields) {
+      if (req.body?.[field] != null && !isFiniteInRange(req.body[field], min, max)) {
+        return res.status(400).json({ ok: false, message: 'Preferencias inválidas.' })
+      }
+    }
     const values = {
       morning: Math.max(0, Math.min(23, safeInt(req.body.morningStart, 6))),
       afternoon: Math.max(0, Math.min(23, safeInt(req.body.afternoonStart, 11))),
@@ -469,7 +520,7 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
       )
       return res.json({ ok: true, preferences: result.rows[0] })
     } catch (error) {
-      return res.status(500).json({ ok: false, message: 'No se pudieron guardar las preferencias.', detail: error.message })
+      return internalError(res, 'No se pudieron guardar las preferencias.', error)
     }
   })
 }
