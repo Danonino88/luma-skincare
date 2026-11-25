@@ -1,15 +1,27 @@
 import crypto from 'node:crypto'
 import { cleanText, internalError, isFiniteInRange, isIsoDate, isSafeDeviceId, isUuid, logServerError } from './security-utils.js'
 
-const DEFAULT_STEPS = [
+const V7_REQUIRED_STEPS = [
   'morning_cleanse',
   'morning_hydrate',
   'morning_spf',
-  'afternoon_spf',
+  'afternoon_care',
   'night_cleanse',
   'night_treat',
   'night_hydrate',
 ]
+
+const LEGACY_STEPS = ['afternoon_spf', 'afternoon_hydrate']
+const SKIN_TYPES = new Set(['NORMAL', 'DRY', 'OILY', 'COMBINATION', 'SENSITIVE'])
+const DEFAULT_STEP_SCHEDULES = {
+  morning_cleanse: '08:00',
+  morning_hydrate: '08:30',
+  morning_spf: '09:00',
+  afternoon_care: '14:00',
+  night_cleanse: '21:00',
+  night_treat: '21:30',
+  night_hydrate: '22:00',
+}
 
 function toIsoFromMillis(value) {
   const numeric = Number(value)
@@ -207,8 +219,19 @@ export async function ensureLumaSchema(pool) {
       hydration_temp_max NUMERIC(5,2) NOT NULL DEFAULT 20,
       hydration_humidity_max SMALLINT NOT NULL DEFAULT 45,
       reminder_minutes INTEGER NOT NULL DEFAULT 5,
+      skin_type VARCHAR(20),
+      morning_reminder_hour SMALLINT NOT NULL DEFAULT 8,
+      afternoon_reminder_hour SMALLINT NOT NULL DEFAULT 14,
+      night_reminder_hour SMALLINT NOT NULL DEFAULT 21,
+      step_schedules JSONB NOT NULL DEFAULT '{}'::jsonb,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE luma_care_preferences ADD COLUMN IF NOT EXISTS skin_type VARCHAR(20);
+    ALTER TABLE luma_care_preferences ADD COLUMN IF NOT EXISTS morning_reminder_hour SMALLINT NOT NULL DEFAULT 8;
+    ALTER TABLE luma_care_preferences ADD COLUMN IF NOT EXISTS afternoon_reminder_hour SMALLINT NOT NULL DEFAULT 14;
+    ALTER TABLE luma_care_preferences ADD COLUMN IF NOT EXISTS night_reminder_hour SMALLINT NOT NULL DEFAULT 21;
+    ALTER TABLE luma_care_preferences ADD COLUMN IF NOT EXISTS step_schedules JSONB NOT NULL DEFAULT '{}'::jsonb;
   `)
 }
 
@@ -246,11 +269,13 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
     }
     return res.json({
       ok: true,
-      service: 'Luma Wear/Mobile API V6.3 Security',
+      service: 'Luma Wear/Mobile API V7.1 Personalized Step Alarms',
       database,
       googleWeatherConfigured: Boolean(String(process.env.GOOGLE_WEATHER_API_KEY || '').trim()),
       weatherFallback: 'open_meteo',
-      reminderMinutesDefault: 5,
+      stepScheduleDefaults: DEFAULT_STEP_SCHEDULES,
+      stepAlarmPolicy: { retryMinutes: 10, missedAfterMinutes: 20 },
+      skinProfiles: [...SKIN_TYPES],
     })
   })
 
@@ -305,7 +330,7 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
     const period = cleanText(req.body?.period, 20).toUpperCase()
     const deviceId = cleanText(req.body?.deviceId, 120)
     const platform = cleanText(req.body?.platform || 'MOBILE', 20).toUpperCase()
-    const allowedSteps = new Set([...DEFAULT_STEPS, 'afternoon_hydrate'])
+    const allowedSteps = new Set([...V7_REQUIRED_STEPS, ...LEGACY_STEPS])
     const allowedPeriods = new Set(['MAÑANA', 'TARDE', 'NOCHE'])
     const occurredAtMillis = Number(req.body?.occurredAt)
     const requestedRoutineDate = cleanText(req.body?.routineDate, 10)
@@ -374,6 +399,7 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
            FROM luma_routine_events
            WHERE usuario_id = $1
              AND routine_date >= CURRENT_DATE - ($2::int - 1)
+             AND step_code = ANY($3::text[])
            ORDER BY routine_date, step_code, occurred_at DESC, id DESC
          )
          SELECT d.day,
@@ -382,7 +408,7 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
          LEFT JOIN latest l ON l.routine_date = d.day
          GROUP BY d.day
          ORDER BY d.day ASC`,
-        [req.auth.user.id, days],
+        [req.auth.user.id, days, V7_REQUIRED_STEPS],
       )
       const formatter = new Intl.DateTimeFormat('es-MX', { weekday: 'short', timeZone: 'UTC' })
       const list = result.rows.map((row) => {
@@ -394,8 +420,8 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
           date: dateText,
           label: formatter.format(dateObject).replace('.', '').slice(0, 3),
           completed: row.completed,
-          total: DEFAULT_STEPS.length,
-          percent: Math.min(100, Math.round((row.completed / DEFAULT_STEPS.length) * 100)),
+          total: V7_REQUIRED_STEPS.length,
+          percent: Math.min(100, Math.round((row.completed / V7_REQUIRED_STEPS.length) * 100)),
         }
       })
       return res.json({ ok: true, days: list })
@@ -471,7 +497,11 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
         [req.auth.user.id],
       )
       const result = await pool.query('SELECT * FROM luma_care_preferences WHERE usuario_id = $1', [req.auth.user.id])
-      return res.json({ ok: true, preferences: result.rows[0] })
+      const preferences = result.rows[0]
+      if (!preferences.step_schedules || Object.keys(preferences.step_schedules).length === 0) {
+        preferences.step_schedules = { ...DEFAULT_STEP_SCHEDULES }
+      }
+      return res.json({ ok: true, preferences })
     } catch (error) {
       return internalError(res, 'No se pudieron obtener las preferencias.', error)
     }
@@ -479,48 +509,86 @@ export function registerLumaRoutes({ app, pool, authRequired }) {
 
   app.patch('/api/luma/preferences', authRequired, async (req, res) => {
     if (!pool) return res.status(503).json({ ok: false, message: 'Base de datos no configurada.' })
+
+    const skinType = req.body?.skinType == null ? null : cleanText(req.body.skinType, 20).toUpperCase()
+    if (skinType != null && !SKIN_TYPES.has(skinType)) {
+      return res.status(400).json({ ok: false, message: 'Tipo de piel inválido.' })
+    }
+
+    const stepSchedulesInput = req.body?.stepSchedules
+    let stepSchedules = null
+    if (stepSchedulesInput != null) {
+      if (typeof stepSchedulesInput !== 'object' || Array.isArray(stepSchedulesInput)) {
+        return res.status(400).json({ ok: false, message: 'Horarios de rutina inválidos.' })
+      }
+      stepSchedules = {}
+      for (const [stepId, time] of Object.entries(stepSchedulesInput)) {
+        if (!V7_REQUIRED_STEPS.includes(stepId) || typeof time !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+          return res.status(400).json({ ok: false, message: 'Horarios de rutina inválidos.' })
+        }
+        stepSchedules[stepId] = time
+      }
+      if (Object.keys(stepSchedules).length !== V7_REQUIRED_STEPS.length) {
+        return res.status(400).json({ ok: false, message: 'Debes configurar los siete pasos de la rutina.' })
+      }
+    }
+
     const numericFields = [
       ['morningStart', 0, 23], ['afternoonStart', 0, 23], ['nightStart', 0, 23],
       ['sunscreenTempMin', -50, 60], ['sunscreenUvMin', 0, 30], ['hydrationTempMax', -50, 60],
       ['hydrationHumidityMax', 0, 100], ['reminderMinutes', 1, 1440],
+      ['morningRoutineHour', 0, 23], ['afternoonRoutineHour', 0, 23], ['nightRoutineHour', 0, 23],
     ]
     for (const [field, min, max] of numericFields) {
       if (req.body?.[field] != null && !isFiniteInRange(req.body[field], min, max)) {
         return res.status(400).json({ ok: false, message: 'Preferencias inválidas.' })
       }
     }
-    const values = {
-      morning: Math.max(0, Math.min(23, safeInt(req.body.morningStart, 6))),
-      afternoon: Math.max(0, Math.min(23, safeInt(req.body.afternoonStart, 11))),
-      night: Math.max(0, Math.min(23, safeInt(req.body.nightStart, 19))),
-      sunscreenTemp: safeNumber(req.body.sunscreenTempMin, 20),
-      sunscreenUv: safeNumber(req.body.sunscreenUvMin, 3),
-      hydrationTemp: safeNumber(req.body.hydrationTempMax, 20),
-      hydrationHumidity: Math.max(0, Math.min(100, safeInt(req.body.hydrationHumidityMax, 45))),
-      reminder: Math.max(1, Math.min(1440, safeInt(req.body.reminderMinutes, 5))),
-    }
+
     try {
+      await pool.query(
+        `INSERT INTO luma_care_preferences (usuario_id) VALUES ($1)
+         ON CONFLICT (usuario_id) DO NOTHING`,
+        [req.auth.user.id],
+      )
+
       const result = await pool.query(
-        `INSERT INTO luma_care_preferences
-          (usuario_id, morning_start, afternoon_start, night_start, sunscreen_temp_min, sunscreen_uv_min,
-           hydration_temp_max, hydration_humidity_max, reminder_minutes, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-         ON CONFLICT (usuario_id) DO UPDATE SET
-           morning_start=EXCLUDED.morning_start,
-           afternoon_start=EXCLUDED.afternoon_start,
-           night_start=EXCLUDED.night_start,
-           sunscreen_temp_min=EXCLUDED.sunscreen_temp_min,
-           sunscreen_uv_min=EXCLUDED.sunscreen_uv_min,
-           hydration_temp_max=EXCLUDED.hydration_temp_max,
-           hydration_humidity_max=EXCLUDED.hydration_humidity_max,
-           reminder_minutes=EXCLUDED.reminder_minutes,
-           updated_at=NOW()
+        `UPDATE luma_care_preferences SET
+           skin_type = COALESCE($2, skin_type),
+           morning_start = COALESCE($3, morning_start),
+           afternoon_start = COALESCE($4, afternoon_start),
+           night_start = COALESCE($5, night_start),
+           sunscreen_temp_min = COALESCE($6, sunscreen_temp_min),
+           sunscreen_uv_min = COALESCE($7, sunscreen_uv_min),
+           hydration_temp_max = COALESCE($8, hydration_temp_max),
+           hydration_humidity_max = COALESCE($9, hydration_humidity_max),
+           reminder_minutes = COALESCE($10, reminder_minutes),
+           morning_reminder_hour = COALESCE($11, morning_reminder_hour),
+           afternoon_reminder_hour = COALESCE($12, afternoon_reminder_hour),
+           night_reminder_hour = COALESCE($13, night_reminder_hour),
+           step_schedules = COALESCE($14::jsonb, step_schedules),
+           updated_at = NOW()
+         WHERE usuario_id = $1
          RETURNING *`,
-        [req.auth.user.id, values.morning, values.afternoon, values.night, values.sunscreenTemp, values.sunscreenUv, values.hydrationTemp, values.hydrationHumidity, values.reminder],
+        [
+          req.auth.user.id,
+          skinType,
+          req.body?.morningStart == null ? null : safeInt(req.body.morningStart),
+          req.body?.afternoonStart == null ? null : safeInt(req.body.afternoonStart),
+          req.body?.nightStart == null ? null : safeInt(req.body.nightStart),
+          req.body?.sunscreenTempMin == null ? null : safeNumber(req.body.sunscreenTempMin),
+          req.body?.sunscreenUvMin == null ? null : safeNumber(req.body.sunscreenUvMin),
+          req.body?.hydrationTempMax == null ? null : safeNumber(req.body.hydrationTempMax),
+          req.body?.hydrationHumidityMax == null ? null : safeInt(req.body.hydrationHumidityMax),
+          req.body?.reminderMinutes == null ? null : safeInt(req.body.reminderMinutes),
+          req.body?.morningRoutineHour == null ? null : safeInt(req.body.morningRoutineHour),
+          req.body?.afternoonRoutineHour == null ? null : safeInt(req.body.afternoonRoutineHour),
+          req.body?.nightRoutineHour == null ? null : safeInt(req.body.nightRoutineHour),
+          stepSchedules == null ? null : JSON.stringify(stepSchedules),
+        ],
       )
       return res.json({ ok: true, preferences: result.rows[0] })
     } catch (error) {
       return internalError(res, 'No se pudieron guardar las preferencias.', error)
     }
-  })
-}
+  })}

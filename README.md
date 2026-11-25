@@ -37,7 +37,7 @@ Crear `backend/.env` con:
 ```env
 PORT=4000
 FRONTEND_ORIGIN=http://localhost:5173
-DATABASE_URL=postgresql://postgres:123456@localhost:5432/luma_skincare
+DATABASE_URL=postgresql://postgres:TU_PASSWORD@localhost:5432/luma_skincare
 SESSION_DAYS=7
 ```
 
