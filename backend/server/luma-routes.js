@@ -66,6 +66,19 @@ async function fetchJson(url) {
   return response.json()
 }
 
+async function fetchCurrentHumidityOpenMeteo(latitude, longitude) {
+  const params = new URLSearchParams({
+    latitude: String(latitude),
+    longitude: String(longitude),
+    current: 'relative_humidity_2m',
+    timezone: 'auto',
+    forecast_days: '1',
+    models: 'best_match',
+  })
+  const root = await fetchJson(`https://api.open-meteo.com/v1/forecast?${params}`)
+  return safeInt(root?.current?.relative_humidity_2m, -1)
+}
+
 async function fetchGoogleWeather(latitude, longitude) {
   const key = String(process.env.GOOGLE_WEATHER_API_KEY || '').trim()
   if (!key) throw new Error('GOOGLE_WEATHER_API_KEY no configurada')
@@ -87,13 +100,15 @@ async function fetchGoogleWeather(latitude, longitude) {
     ? daily.forecastDays[1]
     : null
   const tomorrowPart = tomorrow?.daytimeForecast || tomorrow?.fullDayForecast || {}
+  const humidityNow = await fetchCurrentHumidityOpenMeteo(latitude, longitude)
+    .catch(() => safeInt(current?.relativeHumidity))
 
   return {
     ok: true,
     provider: 'google_weather',
     temperatureC: safeNumber(current?.temperature?.degrees),
     apparentTemperatureC: safeNumber(current?.feelsLikeTemperature?.degrees, safeNumber(current?.temperature?.degrees)),
-    humidityPercent: safeInt(current?.relativeHumidity),
+    humidityPercent: humidityNow >= 0 && humidityNow <= 100 ? humidityNow : safeInt(current?.relativeHumidity),
     uvIndex: safeNumber(current?.uvIndex),
     weatherCode: googleConditionToWmo(current?.weatherCondition?.type),
     conditionText: current?.weatherCondition?.description?.text || '',
@@ -102,7 +117,7 @@ async function fetchGoogleWeather(latitude, longitude) {
     precipitationMm: safeNumber(current?.precipitation?.qpf?.quantity),
     windSpeedKmh: safeNumber(current?.wind?.speed?.value),
     isDay: Boolean(current?.isDaytime),
-    sourceLabel: 'Google Weather · ubicación real',
+    sourceLabel: 'Google Weather · humedad actual Open-Meteo',
     locationLabel: `${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)}`,
     tomorrow: {
       uvIndex: safeNumber(tomorrowPart?.uvIndex),
@@ -119,6 +134,7 @@ async function fetchOpenMeteo(latitude, longitude) {
     latitude: String(latitude),
     longitude: String(longitude),
     current: 'temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,wind_speed_10m,uv_index',
+    hourly: 'relative_humidity_2m',
     daily: 'weather_code,temperature_2m_max,temperature_2m_min,uv_index_max',
     timezone: 'auto',
     forecast_days: '2',
